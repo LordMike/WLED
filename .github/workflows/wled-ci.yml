@@ -68,7 +68,7 @@ jobs:
           build_output/firmware/*.bin
           build_output/firmware/*.gz
     - uses: actions/upload-artifact@v2
-      if: startsWith(github.ref, 'refs/tags/')
+      #if: startsWith(github.ref, 'refs/tags/')
       with:
         name: firmware-release
         path: build_output/release/*.bin
