@@ -93,7 +93,7 @@ void doublePressAction(uint8_t b)
 bool isButtonPressed(uint8_t i)
 {
   if (btnPin[i]<0) return false;
-  uint8_t pin = btnPin[i];
+  unsigned pin = btnPin[i];
 
   switch (buttonType[i]) {
     case BTN_TYPE_NONE:
@@ -125,7 +125,7 @@ void handleSwitch(uint8_t b)
 {
   // isButtonPressed() handles inverted/noninverted logic
   if (buttonPressedBefore[b] != isButtonPressed(b)) {
-    DEBUG_PRINT(F("Switch: State changed ")); DEBUG_PRINTLN(b);
+    DEBUG_PRINTF_P(PSTR("Switch: State changed %u\n"), b);
     buttonPressedTime[b] = millis();
     buttonPressedBefore[b] = !buttonPressedBefore[b];
   }
@@ -133,15 +133,15 @@ void handleSwitch(uint8_t b)
   if (buttonLongPressed[b] == buttonPressedBefore[b]) return;
 
   if (millis() - buttonPressedTime[b] > WLED_DEBOUNCE_THRESHOLD) { //fire edge event only after 50ms without change (debounce)
-    DEBUG_PRINT(F("Switch: Activating ")); DEBUG_PRINTLN(b);
+    DEBUG_PRINTF_P(PSTR("Switch: Activating  %u\n"), b);
     if (!buttonPressedBefore[b]) { // on -> off
-      DEBUG_PRINT(F("Switch: On -> Off ")); DEBUG_PRINTLN(b);
+      DEBUG_PRINTF_P(PSTR("Switch: On -> Off (%u)\n"), b);
       if (macroButton[b]) applyPreset(macroButton[b], CALL_MODE_BUTTON_PRESET);
       else { //turn on
         if (!bri) {toggleOnOff(); stateUpdated(CALL_MODE_BUTTON);}
       }
     } else {  // off -> on
-      DEBUG_PRINT(F("Switch: Off -> On ")); DEBUG_PRINTLN(b);
+      DEBUG_PRINTF_P(PSTR("Switch: Off -> On (%u)\n"), b);
       if (macroLongPress[b]) applyPreset(macroLongPress[b], CALL_MODE_BUTTON_PRESET);
       else { //turn off
         if (bri) {toggleOnOff(); stateUpdated(CALL_MODE_BUTTON);}
@@ -171,20 +171,20 @@ void handleAnalog(uint8_t b)
 {
   static uint8_t oldRead[WLED_MAX_BUTTONS] = {0};
   static float filteredReading[WLED_MAX_BUTTONS] = {0.0f};
-  uint16_t rawReading;    // raw value from analogRead, scaled to 12bit
+  unsigned rawReading;    // raw value from analogRead, scaled to 12bit
 
-  DEBUG_PRINT(F("Analog: Reading button ")); DEBUG_PRINTLN(b);
+  DEBUG_PRINTF_P(PSTR("Analog: Reading button %u\n"), b);
 
   #ifdef ESP8266
   rawReading = analogRead(A0) << 2;   // convert 10bit read to 12bit
   #else
-  if ((btnPin[b] < 0) || (digitalPinToAnalogChannel(btnPin[b]) < 0)) return; // pin must support analog ADC - newer esp32 frameworks throw lots of warnings otherwise
+  if ((btnPin[b] < 0) /*|| (digitalPinToAnalogChannel(btnPin[b]) < 0)*/) return; // pin must support analog ADC - newer esp32 frameworks throw lots of warnings otherwise
   rawReading = analogRead(btnPin[b]); // collect at full 12bit resolution
   #endif
   yield();                            // keep WiFi task running - analog read may take several millis on ESP8266
 
   filteredReading[b] += POT_SMOOTHING * ((float(rawReading) / 16.0f) - filteredReading[b]); // filter raw input, and scale to [0..255]
-  uint16_t aRead = max(min(int(filteredReading[b]), 255), 0);                               // squash into 8bit
+  unsigned aRead = max(min(int(filteredReading[b]), 255), 0);                               // squash into 8bit
   if(aRead <= POT_SENSITIVITY) aRead = 0;                                                   // make sure that 0 and 255 are used
   if(aRead >= 255-POT_SENSITIVITY) aRead = 255;
 
@@ -193,8 +193,8 @@ void handleAnalog(uint8_t b)
   // remove noise & reduce frequency of UI updates
   if (abs(int(aRead) - int(oldRead[b])) <= POT_SENSITIVITY) return;  // no significant change in reading
 
-  DEBUG_PRINT(F("Analog: Raw = ")); DEBUG_PRINT(rawReading);
-  DEBUG_PRINT(F(" Filtered = ")); DEBUG_PRINTLN(aRead);
+  DEBUG_PRINTF_P(PSTR("Analog: Raw = %u\n"), rawReading);
+  DEBUG_PRINTF_P(PSTR(" Filtered = %u\n"), aRead);
 
   // Unomment the next lines if you still see flickering related to potentiometer
   // This waits until strip finishes updating (why: strip was not updating at the start of handleButton() but may have started during analogRead()?)
@@ -207,7 +207,7 @@ void handleAnalog(uint8_t b)
 
   // if no macro for "short press" and "long press" is defined use brightness control
   if (!macroButton[b] && !macroLongPress[b]) {
-    DEBUG_PRINT(F("Analog: Action = ")); DEBUG_PRINTLN(macroDoublePress[b]);
+    DEBUG_PRINTF_P(PSTR("Analog: Action = %u\n"), macroDoublePress[b]);
     // if "double press" macro defines which option to change
     if (macroDoublePress[b] >= 250) {
       // global brightness
@@ -215,6 +215,7 @@ void handleAnalog(uint8_t b)
         briLast = bri;
         bri = 0;
       } else {
+        if (bri == 0) strip.restartRuntime();
         bri = aRead;
       }
     } else if (macroDoublePress[b] == 249) {
@@ -260,14 +261,14 @@ void handleButton()
   if (strip.isUpdating() && (now - lastRun < ANALOG_BTN_READ_CYCLE+1)) return; // don't interfere with strip update (unless strip is updating continuously, e.g. very long strips)
   lastRun = now;
 
-  for (uint8_t b=0; b<WLED_MAX_BUTTONS; b++) {
+  for (unsigned b=0; b<WLED_MAX_BUTTONS; b++) {
     #ifdef ESP8266
     if ((btnPin[b]<0 && !(buttonType[b] == BTN_TYPE_ANALOG || buttonType[b] == BTN_TYPE_ANALOG_INVERTED)) || buttonType[b] == BTN_TYPE_NONE) continue;
     #else
     if (btnPin[b]<0 || buttonType[b] == BTN_TYPE_NONE) continue;
     #endif
 
-    if (usermods.handleButton(b)) continue; // did usermod handle buttons
+    if (UsermodManager::handleButton(b)) continue; // did usermod handle buttons
 
     if (buttonType[b] == BTN_TYPE_ANALOG || buttonType[b] == BTN_TYPE_ANALOG_INVERTED) { // button is not a button but a potentiometer
       if (now - lastAnalogRead > ANALOG_BTN_READ_CYCLE) {
@@ -308,7 +309,7 @@ void handleButton()
         buttonLongPressed[b] = true;
       }
 
-    } else if (!isButtonPressed(b) && buttonPressedBefore[b]) { //released
+    } else if (buttonPressedBefore[b]) { //released
       long dur = now - buttonPressedTime[b];
 
       // released after rising-edge short press action
@@ -358,69 +359,35 @@ void handleButton()
   }
 }
 
-// If enabled, RMT idle level is set to HIGH when off
-// to prevent leakage current when using an N-channel MOSFET to toggle LED power
-#ifdef ESP32_DATA_IDLE_HIGH
-void esp32RMTInvertIdle()
-{
-  bool idle_out;
-  for (uint8_t u = 0; u < BusManager::getNumBusses(); u++)
-  {
-    if (u > 7) return; // only 8 RMT channels, TODO: ESP32 variants have less RMT channels
-    Bus *bus = BusManager::getBus(u);
-    if (!bus || bus->getLength()==0 || !IS_DIGITAL(bus->getType()) || IS_2PIN(bus->getType())) continue;
-    //assumes that bus number to rmt channel mapping stays 1:1
-    rmt_channel_t ch = static_cast<rmt_channel_t>(u);
-    rmt_idle_level_t lvl;
-    rmt_get_idle_level(ch, &idle_out, &lvl);
-    if (lvl == RMT_IDLE_LEVEL_HIGH) lvl = RMT_IDLE_LEVEL_LOW;
-    else if (lvl == RMT_IDLE_LEVEL_LOW) lvl = RMT_IDLE_LEVEL_HIGH;
-    else continue;
-    rmt_set_idle_level(ch, idle_out, lvl);
-  }
-}
-#endif
-
+// handleIO() happens *after* handleTransitions() (see wled.cpp) which may change bri/briT but *before* strip.service()
+// where actual LED painting occurrs
+// this is important for relay control and in the event of turning off on-board LED
 void handleIO()
 {
   handleButton();
 
-  //set relay when LEDs turn on
-  if (strip.getBrightness())
-  {
+  // if we want to control on-board LED (ESP8266) or relay we have to do it here as the final show() may not happen until
+  // next loop() cycle
+  if (strip.getBrightness()) {
     lastOnTime = millis();
-    if (offMode)
-    {
-      #ifdef ESP32_DATA_IDLE_HIGH
-      esp32RMTInvertIdle();
-      #endif
+    if (offMode) {
+      BusManager::on();
       if (rlyPin>=0) {
         pinMode(rlyPin, rlyOpenDrain ? OUTPUT_OPEN_DRAIN : OUTPUT);
         digitalWrite(rlyPin, rlyMde);
       }
       offMode = false;
     }
-  } else if (millis() - lastOnTime > 600)
-  {
+  } else if (millis() - lastOnTime > 600 && !strip.needsUpdate()) {
+    // for turning LED or relay off we need to wait until strip no longer needs updates (strip.trigger())
     if (!offMode) {
-      #ifdef ESP8266
-      // turn off built-in LED if strip is turned off
-      // this will break digital bus so will need to be re-initialised on On
-      PinOwner ledPinOwner = pinManager.getPinOwner(LED_BUILTIN);
-      if (!strip.isOffRefreshRequired() && (ledPinOwner == PinOwner::None || ledPinOwner == PinOwner::BusDigital)) {
-        pinMode(LED_BUILTIN, OUTPUT);
-        digitalWrite(LED_BUILTIN, HIGH);
-      }
-      #endif
-      #ifdef ESP32_DATA_IDLE_HIGH
-      esp32RMTInvertIdle();
-      #endif
+      BusManager::off();
       if (rlyPin>=0) {
         pinMode(rlyPin, rlyOpenDrain ? OUTPUT_OPEN_DRAIN : OUTPUT);
         digitalWrite(rlyPin, !rlyMde);
       }
+      offMode = true;
     }
-    offMode = true;
   }
 }
 
