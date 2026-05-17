@@ -45,6 +45,17 @@ static void fillWLEDVersion(char *buf, size_t len)
 {
   if (!buf || len == 0) return;
 
+#ifdef WLED_BUILD_LABEL
+  snprintf_P(buf,len,PSTR("WLED %s<br>\\\"%s\\\"<br>(Processor: %s)"),
+    WLED_BUILD_LABEL,
+    releaseString,
+  #if defined(ARDUINO_ARCH_ESP32)
+    ESP.getChipModel()
+  #else
+    "ESP8266"
+  #endif
+  );
+#else
   snprintf_P(buf,len,PSTR("WLED %s (%d)<br>\\\"%s\\\"<br>(Processor: %s)"),
     versionString,
     VERSION,
@@ -55,6 +66,7 @@ static void fillWLEDVersion(char *buf, size_t len)
     "ESP8266"
   #endif
   );
+#endif
 }
 
 // print used pins by scanning JsonObject (1 level deep)
