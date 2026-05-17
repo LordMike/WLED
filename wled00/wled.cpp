@@ -675,6 +675,9 @@ void WLED::initAP(bool resetAP)
     }
     e131.begin(false, e131Port, e131Universe, E131_MAX_UNIVERSE_COUNT);
     ddp.begin(false, DDP_DEFAULT_PORT);
+#ifdef WLED_ENABLE_PXP
+    pxpBeginUdp();
+#endif
 
     dnsServer.setErrorReplyCode(DNSReplyCode::NoError);
     dnsServer.start(53, "*", WiFi.softAPIP());
@@ -869,6 +872,9 @@ void WLED::initInterfaces()
 
   e131.begin(e131Multicast, e131Port, e131Universe, E131_MAX_UNIVERSE_COUNT);
   ddp.begin(false, DDP_DEFAULT_PORT);
+#ifdef WLED_ENABLE_PXP
+  pxpBeginUdp();
+#endif
   reconnectHue();
   interfacesInited = true;
   wasConnected = true;
