@@ -61,6 +61,9 @@ constexpr uint16_t PXP_LZSS_WINDOW = 512;
 #ifndef PXP_TIMING_LATE_GRACE_MS
   #define PXP_TIMING_LATE_GRACE_MS 25
 #endif
+#ifndef PXP_TIMING_RESYNC_THRESHOLD_MS
+  #define PXP_TIMING_RESYNC_THRESHOLD_MS 5000
+#endif
 static_assert((PXP_TIMING_ARENA_SIZE % 4) == 0, "PXP_TIMING_ARENA_SIZE must be 4-byte aligned");
 static_assert((PXP_TIMING_ARENA_SIZE / 4) <= UINT16_MAX, "PXP timing arena must fit 16-bit word offsets");
 static_assert(PXP_TIMING_QUEUE_ENTRIES > 0 && PXP_TIMING_QUEUE_ENTRIES <= UINT8_MAX, "PXP timing queue entry count must fit uint8_t counters");
@@ -69,6 +72,10 @@ constexpr uint8_t PXP_ARENA_MAGIC = 0xC7;
 constexpr uint8_t PXP_ARENA_USED = 0x01;
 constexpr uint8_t PXP_LATE_APPLY = 0;
 constexpr uint8_t PXP_LATE_DROP = 1;
+constexpr uint8_t PXP_BUF_FULL_QUEUE = 1;
+constexpr uint8_t PXP_BUF_FULL_FRAME = 2;
+constexpr uint8_t PXP_BUF_FULL_ARENA = 3;
+constexpr uint8_t PXP_BUF_FULL_INSERT = 4;
 
 struct PxpArenaHeader {
   uint16_t lenWords;
@@ -103,6 +110,61 @@ uint32_t pxpTimingLocalSyncMs = 0;
 IPAddress pxpQueueResponseIp;
 uint16_t pxpQueueResponsePort = 0;
 bool pxpQueueResponseEndpointValid = false;
+uint32_t pxpLastQueueTraceMs = 0;
+uint32_t pxpLastLateDropTraceMs = 0;
+uint32_t pxpLastTimingTraceMs = 0;
+uint16_t pxpTimeSyncTraceCount = 0;
+uint16_t pxpScheduleTraceCount = 0;
+
+void pxpDebugLogBufferFull(uint8_t reason, uint32_t packetTag, uint8_t commandType, uint32_t commandLen, uint32_t frameLen, const PxpPacketSchedule& schedule)
+{
+  DEBUG_PRINTF_P(PSTR("PXP buffer full: reason=%u tag=%lu cmd=0x%02X cmdLen=%lu frameLen=%lu q=%u/%u arena=%uB dueLocal=%lu now=%lu late=%u\n"),
+                 reason, (unsigned long)packetTag, commandType, (unsigned long)commandLen, (unsigned long)frameLen,
+                 pxpScheduleCount, PXP_TIMING_QUEUE_ENTRIES, PXP_TIMING_ARENA_SIZE,
+                 (unsigned long)schedule.localDueMs, (unsigned long)millis(), schedule.latePolicy);
+}
+
+void pxpDebugLogScheduleWithoutFrame(uint32_t packetTag, uint32_t commandOrdinal, const PxpPacketSchedule& schedule, uint8_t queuedCommands, uint8_t queuedPixels)
+{
+  DEBUG_PRINTF_P(PSTR("PXP schedule without frame: tag=%lu ord=%lu queued=%u pixels=%u q=%u/%u senderDue=%lu localDue=%lu now=%lu late=%u\n"),
+                 (unsigned long)packetTag, (unsigned long)commandOrdinal, queuedCommands, queuedPixels,
+                 pxpScheduleCount, PXP_TIMING_QUEUE_ENTRIES, (unsigned long)schedule.senderDueMs,
+                 (unsigned long)schedule.localDueMs, (unsigned long)millis(), schedule.latePolicy);
+}
+
+bool pxpShouldTraceTiming()
+{
+  const uint32_t now = millis();
+  if (int32_t(now - pxpLastTimingTraceMs) > 1000) {
+    pxpLastTimingTraceMs = now;
+    return true;
+  }
+  return false;
+}
+
+void pxpDebugLogTimeSync(uint32_t packetTag, uint32_t commandOrdinal, uint32_t senderTime, uint32_t receiveMs, bool wasSynced)
+{
+  if (pxpTimeSyncTraceCount < 4 || pxpShouldTraceTiming()) {
+    if (pxpTimeSyncTraceCount < UINT16_MAX) pxpTimeSyncTraceCount++;
+    DEBUG_PRINTF_P(PSTR("PXP TimeSync: tag=%lu ord=%lu sender=%lu receive=%lu wasSynced=%u syncSender=%lu syncLocal=%lu q=%u/%u\n"),
+                   (unsigned long)packetTag, (unsigned long)commandOrdinal, (unsigned long)senderTime,
+                   (unsigned long)receiveMs, wasSynced, (unsigned long)pxpTimingSenderSyncMs,
+                   (unsigned long)pxpTimingLocalSyncMs, pxpScheduleCount, PXP_TIMING_QUEUE_ENTRIES);
+  }
+}
+
+void pxpDebugLogScheduleSet(uint32_t packetTag, uint32_t commandOrdinal, const PxpPacketSchedule& schedule, bool relative)
+{
+  const uint32_t now = millis();
+  if (pxpScheduleTraceCount < 8 || pxpShouldTraceTiming()) {
+    if (pxpScheduleTraceCount < UINT16_MAX) pxpScheduleTraceCount++;
+    DEBUG_PRINTF_P(PSTR("PXP Schedule: tag=%lu ord=%lu rel=%u senderDue=%lu localDue=%lu now=%lu in=%ld late=%u q=%u/%u synced=%u\n"),
+                   (unsigned long)packetTag, (unsigned long)commandOrdinal, relative,
+                   (unsigned long)schedule.senderDueMs, (unsigned long)schedule.localDueMs,
+                   (unsigned long)now, (long)(schedule.localDueMs - now), schedule.latePolicy,
+                   pxpScheduleCount, PXP_TIMING_QUEUE_ENTRIES, pxpTimingSynced);
+  }
+}
 #endif
 
 /*
@@ -759,6 +821,16 @@ bool sendResponse(uint32_t packetTag, uint16_t payloadLen)
 
 bool sendErrorTo(uint32_t packetTag, uint32_t commandOrdinal, uint8_t commandType, uint8_t errorCode, const IPAddress& ip, uint16_t port)
 {
+  DEBUG_PRINTF_P(PSTR("PXP error: tag=%lu ord=%lu cmd=0x%02X err=%u peer=%u.%u.%u.%u:%u q=%u\n"),
+                 (unsigned long)packetTag, (unsigned long)commandOrdinal, commandType, errorCode,
+                 ip[0], ip[1], ip[2], ip[3], port,
+#ifdef WLED_ENABLE_PXP_TIMING
+                 pxpScheduleCount
+#else
+                 0
+#endif
+  );
+
   PxpWriteBuffer out{pxpResponse, PXP_MAX_PACKET_SIZE - 8};
   out.write(PXP_CMD_ERROR);
 
@@ -856,12 +928,19 @@ bool handleVerifyTo(PxpCommandReader& command, uint32_t packetTag, PxpError& err
   const uint32_t segmentCount = (count + segmentSize - 1) / segmentSize;
   const uint16_t bitmapBytes = (segmentCount + 7) / 8;
   if (bitmapBytes > PXP_MAX_PACKET_SIZE - 32) {
+    DEBUG_PRINTF_P(PSTR("PXP verify buffer full: pkt=%lu start=%lu count=%lu segSize=%lu segs=%lu bitmap=%u max=%u peer=%u.%u.%u.%u:%u\n"),
+                   (unsigned long)packetTag, (unsigned long)start, (unsigned long)count,
+                   (unsigned long)segmentSize, (unsigned long)segmentCount, bitmapBytes,
+                   PXP_MAX_PACKET_SIZE - 32, ip[0], ip[1], ip[2], ip[3], port);
     error.code = PXP_ERROR_BUFFER_FULL;
     return false;
   }
 
   memset(pxpVerifyScratch, 0, bitmapBytes);
   bool mismatch = false;
+  uint32_t firstMismatchSegment = UINT32_MAX;
+  uint16_t firstMismatchExpected = 0;
+  uint16_t firstMismatchActual = 0;
   for (uint32_t segment = 0; segment < segmentCount; segment++) {
     uint16_t expected;
     if (!readLe16(command, expected)) {
@@ -875,6 +954,11 @@ bool handleVerifyTo(PxpCommandReader& command, uint32_t packetTag, PxpError& err
     const uint16_t actual = crc16PxpSegment(segmentStart, segmentCountPixels);
     if (actual != expected) {
       pxpVerifyScratch[segment >> 3] |= 1 << (segment & 0x07);
+      if (!mismatch) {
+        firstMismatchSegment = segment;
+        firstMismatchExpected = expected;
+        firstMismatchActual = actual;
+      }
       mismatch = true;
     }
   }
@@ -884,7 +968,18 @@ bool handleVerifyTo(PxpCommandReader& command, uint32_t packetTag, PxpError& err
     return false;
   }
 
+  if (mismatch) {
+    DEBUG_PRINTF_P(PSTR("PXP verify mismatch: pkt=%lu verify=%lu start=%lu count=%lu segSize=%lu segs=%lu firstSeg=%lu firstPix=%lu expected=0x%04X actual=0x%04X dirtyBytes=%u peer=%u.%u.%u.%u:%u\n"),
+                   (unsigned long)packetTag, (unsigned long)verifyTag, (unsigned long)start, (unsigned long)count,
+                   (unsigned long)segmentSize, (unsigned long)segmentCount, (unsigned long)firstMismatchSegment,
+                   (unsigned long)(start + firstMismatchSegment * segmentSize), firstMismatchExpected, firstMismatchActual,
+                   bitmapBytes, ip[0], ip[1], ip[2], ip[3], port);
+  }
+
   if (mismatch && !sendVerifyReportTo(packetTag, verifyTag, start, count, segmentSizeMinusOne, pxpVerifyScratch, bitmapBytes, ip, port)) {
+    DEBUG_PRINTF_P(PSTR("PXP verify report failed: pkt=%lu verify=%lu start=%lu count=%lu dirtyBytes=%u peer=%u.%u.%u.%u:%u\n"),
+                   (unsigned long)packetTag, (unsigned long)verifyTag, (unsigned long)start,
+                   (unsigned long)count, bitmapBytes, ip[0], ip[1], ip[2], ip[3], port);
     error.code = PXP_ERROR_BUFFER_FULL;
     return false;
   }
@@ -974,11 +1069,35 @@ void pxpApplyTimeSync(uint32_t senderMs, uint32_t receiveMs)
     return;
   }
 
-  const int32_t error = int32_t(receiveMs - pxpMapSenderToLocal(senderMs));
+  const uint32_t mappedMs = pxpMapSenderToLocal(senderMs);
+  const int32_t error = int32_t(receiveMs - mappedMs);
+  if (error > int32_t(PXP_TIMING_RESYNC_THRESHOLD_MS) || error < -int32_t(PXP_TIMING_RESYNC_THRESHOLD_MS)) {
+    DEBUG_PRINTF_P(PSTR("PXP timing resync: sender=%lu receive=%lu mapped=%lu error=%ld oldSender=%lu oldLocal=%lu q=%u/%u\n"),
+                   (unsigned long)senderMs, (unsigned long)receiveMs, (unsigned long)mappedMs, (long)error,
+                   (unsigned long)pxpTimingSenderSyncMs, (unsigned long)pxpTimingLocalSyncMs,
+                   pxpScheduleCount, PXP_TIMING_QUEUE_ENTRIES);
+    pxpTimingSenderSyncMs = senderMs;
+    pxpTimingLocalSyncMs = receiveMs;
+    return;
+  }
+
   int32_t adjust = error / 8;
   if (adjust > 10) adjust = 10;
   else if (adjust < -10) adjust = -10;
   pxpTimingLocalSyncMs += adjust;
+}
+
+void pxpRecoverStaleScheduleTimebase(uint32_t senderDueMs, uint32_t receiveMs, uint32_t localDueMs)
+{
+  const int32_t scheduleError = int32_t(receiveMs - localDueMs);
+  if (scheduleError <= int32_t(PXP_TIMING_RESYNC_THRESHOLD_MS) && scheduleError >= -int32_t(PXP_TIMING_RESYNC_THRESHOLD_MS)) return;
+
+  DEBUG_PRINTF_P(PSTR("PXP schedule timebase stale: senderDue=%lu receive=%lu mappedDue=%lu error=%ld oldSender=%lu oldLocal=%lu q=%u/%u\n"),
+                 (unsigned long)senderDueMs, (unsigned long)receiveMs, (unsigned long)localDueMs, (long)scheduleError,
+                 (unsigned long)pxpTimingSenderSyncMs, (unsigned long)pxpTimingLocalSyncMs,
+                 pxpScheduleCount, PXP_TIMING_QUEUE_ENTRIES);
+  pxpTimingSenderSyncMs = senderDueMs;
+  pxpTimingLocalSyncMs = receiveMs;
 }
 
 uint8_t pxpVarUIntLen(uint32_t value)
@@ -1126,7 +1245,15 @@ void pxpRemoveScheduledEntry(uint8_t pos)
 
 bool pxpQueueCommand(PxpCommandReader& command, uint8_t commandType, uint32_t commandLen, const PxpPacketSchedule& schedule, uint32_t packetTag, PxpError& error)
 {
-  if (schedule.latePolicy == PXP_LATE_DROP && pxpIsLate(schedule.localDueMs, millis())) {
+  const uint32_t now = millis();
+  if (schedule.latePolicy == PXP_LATE_DROP && pxpIsLate(schedule.localDueMs, now)) {
+    if (int32_t(now - pxpLastLateDropTraceMs) > 1000) {
+      pxpLastLateDropTraceMs = now;
+      DEBUG_PRINTF_P(PSTR("PXP late-drop at enqueue: tag=%lu cmd=0x%02X len=%lu due=%lu now=%lu lateBy=%ld q=%u/%u senderDue=%lu\n"),
+                     (unsigned long)packetTag, commandType, (unsigned long)commandLen,
+                     (unsigned long)schedule.localDueMs, (unsigned long)now, (long)(now - schedule.localDueMs),
+                     pxpScheduleCount, PXP_TIMING_QUEUE_ENTRIES, (unsigned long)schedule.senderDueMs);
+    }
     if (!command.skip()) {
       error.code = command.compressionError ? PXP_ERROR_COMPRESSION : PXP_ERROR_LENGTH_MISMATCH;
       return false;
@@ -1135,18 +1262,21 @@ bool pxpQueueCommand(PxpCommandReader& command, uint8_t commandType, uint32_t co
   }
 
   if (pxpScheduleCount >= PXP_TIMING_QUEUE_ENTRIES) {
+    pxpDebugLogBufferFull(PXP_BUF_FULL_QUEUE, packetTag, commandType, commandLen, 0, schedule);
     error.code = PXP_ERROR_BUFFER_FULL;
     return false;
   }
 
   const uint32_t frameLen = 1 + pxpVarUIntLen(commandLen) + commandLen;
   if (frameLen > UINT16_MAX) {
+    pxpDebugLogBufferFull(PXP_BUF_FULL_FRAME, packetTag, commandType, commandLen, frameLen, schedule);
     error.code = PXP_ERROR_BUFFER_FULL;
     return false;
   }
 
   uint16_t offsetWords;
   if (!pxpArenaAlloc(frameLen, offsetWords)) {
+    pxpDebugLogBufferFull(PXP_BUF_FULL_ARENA, packetTag, commandType, commandLen, frameLen, schedule);
     error.code = PXP_ERROR_BUFFER_FULL;
     return false;
   }
@@ -1170,9 +1300,17 @@ bool pxpQueueCommand(PxpCommandReader& command, uint8_t commandType, uint32_t co
   entry.latePolicy = schedule.latePolicy;
   entry.commandType = commandType;
   if (!pxpInsertScheduledEntry(entry)) {
+    pxpDebugLogBufferFull(PXP_BUF_FULL_INSERT, packetTag, commandType, commandLen, frameLen, schedule);
     pxpArenaFree(offsetWords);
     error.code = PXP_ERROR_BUFFER_FULL;
     return false;
+  }
+  if (commandType == PXP_CMD_PIXEL_DATA || int32_t(now - pxpLastQueueTraceMs) > 1000) {
+    pxpLastQueueTraceMs = now;
+    DEBUG_PRINTF_P(PSTR("PXP queued: tag=%lu cmd=0x%02X len=%lu due=%lu now=%lu in=%ld q=%u/%u offset=%u\n"),
+                   (unsigned long)packetTag, commandType, (unsigned long)commandLen,
+                   (unsigned long)entry.dueTimeMs, (unsigned long)now, (long)(entry.dueTimeMs - now),
+                   pxpScheduleCount, PXP_TIMING_QUEUE_ENTRIES, offsetWords);
   }
   return true;
 }
@@ -1192,6 +1330,11 @@ void pxpResetTiming()
   pxpTimingSynced = false;
   pxpQueueResponseEndpointValid = false;
   pxpScheduledTarget = PxpTarget();
+  pxpLastQueueTraceMs = 0;
+  pxpLastLateDropTraceMs = 0;
+  pxpLastTimingTraceMs = 0;
+  pxpTimeSyncTraceCount = 0;
+  pxpScheduleTraceCount = 0;
 }
 #endif
 
@@ -1204,13 +1347,22 @@ bool processPacketCommands(const uint8_t* payload, uint16_t payloadLen, bool com
   PxpTarget target;
 #ifdef WLED_ENABLE_PXP_TIMING
   PxpPacketSchedule schedule;
+  uint8_t scheduledCommandCount = 0;
+  uint8_t scheduledPixelCount = 0;
 #endif
   uint32_t ordinal = 0;
 
   for (;;) {
     uint8_t commandType;
     const ReadStatus status = reader.read(commandType);
-    if (status == ReadStatus::End) return true;
+    if (status == ReadStatus::End) {
+#ifdef WLED_ENABLE_PXP_TIMING
+      if (schedule.active && scheduledPixelCount == 0) {
+        pxpDebugLogScheduleWithoutFrame(packetTag, ordinal, schedule, scheduledCommandCount, scheduledPixelCount);
+      }
+#endif
+      return true;
+    }
     if (status == ReadStatus::CompressionError) {
       error.code = PXP_ERROR_COMPRESSION;
       error.command = 0;
@@ -1233,6 +1385,8 @@ bool processPacketCommands(const uint8_t* payload, uint16_t payloadLen, bool com
 #ifdef WLED_ENABLE_PXP_TIMING
     if (schedule.active && pxpIsSchedulableCommand(commandType)) {
       if (!pxpQueueCommand(command, commandType, commandLen, schedule, packetTag, error)) return false;
+      if (scheduledCommandCount < UINT8_MAX) scheduledCommandCount++;
+      if (commandType == PXP_CMD_PIXEL_DATA && scheduledPixelCount < UINT8_MAX) scheduledPixelCount++;
       ordinal++;
       continue;
     }
@@ -1251,6 +1405,10 @@ bool processPacketCommands(const uint8_t* payload, uint16_t payloadLen, bool com
       case PXP_CMD_TARGET_SPARSE:
       case PXP_CMD_TARGET_SPARSE_SEGMENTS: {
         if (commandLen > PXP_MAX_PACKET_SIZE) {
+          DEBUG_PRINTF_P(PSTR("PXP target buffer full: tag=%lu ord=%lu cmd=0x%02X len=%lu max=%u peer=%u.%u.%u.%u:%u\n"),
+                         (unsigned long)packetTag, (unsigned long)ordinal, commandType, (unsigned long)commandLen,
+                         PXP_MAX_PACKET_SIZE, pxpUdp.remoteIP()[0], pxpUdp.remoteIP()[1], pxpUdp.remoteIP()[2],
+                         pxpUdp.remoteIP()[3], pxpUdp.remotePort());
           error.code = PXP_ERROR_BUFFER_FULL;
           return false;
         }
@@ -1272,9 +1430,19 @@ bool processPacketCommands(const uint8_t* payload, uint16_t payloadLen, bool com
       case PXP_CMD_PIXEL_DATA:
         realtimeIP = pxpUdp.remoteIP();
         realtimeLock(realtimeTimeoutMs, REALTIME_MODE_PXP);
-        if (!realtimeOverride && !handlePixelData(command, target, pxpTargetData, error)) return false;
+        if (!realtimeOverride && !handlePixelData(command, target, pxpTargetData, error)) {
+          DEBUG_PRINTF_P(PSTR("PXP PixelData failed: tag=%lu ord=%lu err=%u len=%lu targetMode=%u targetCount=%lu override=%u peer=%u.%u.%u.%u:%u\n"),
+                         (unsigned long)packetTag, (unsigned long)ordinal, error.code, (unsigned long)commandLen,
+                         (unsigned)target.mode, (unsigned long)target.count, realtimeOverride,
+                         pxpUdp.remoteIP()[0], pxpUdp.remoteIP()[1], pxpUdp.remoteIP()[2], pxpUdp.remoteIP()[3], pxpUdp.remotePort());
+          return false;
+        }
         if (realtimeOverride && !command.skip()) {
           error.code = command.compressionError ? PXP_ERROR_COMPRESSION : PXP_ERROR_LENGTH_MISMATCH;
+          DEBUG_PRINTF_P(PSTR("PXP PixelData skip failed: tag=%lu ord=%lu err=%u len=%lu override=%u peer=%u.%u.%u.%u:%u\n"),
+                         (unsigned long)packetTag, (unsigned long)ordinal, error.code, (unsigned long)commandLen,
+                         realtimeOverride, pxpUdp.remoteIP()[0], pxpUdp.remoteIP()[1], pxpUdp.remoteIP()[2],
+                         pxpUdp.remoteIP()[3], pxpUdp.remotePort());
           return false;
         }
         break;
@@ -1298,7 +1466,9 @@ bool processPacketCommands(const uint8_t* payload, uint16_t payloadLen, bool com
           error.code = PXP_ERROR_BAD_ARGUMENTS;
           return false;
         }
+        const bool wasSynced = pxpTimingSynced;
         pxpApplyTimeSync(senderTime, receiveMs);
+        pxpDebugLogTimeSync(packetTag, ordinal, senderTime, receiveMs, wasSynced);
         break;
       }
 
@@ -1314,8 +1484,14 @@ bool processPacketCommands(const uint8_t* payload, uint16_t payloadLen, bool com
             error.code = PXP_ERROR_BAD_ARGUMENTS;
             return false;
           }
+          if (scheduledPixelCount == 0) {
+            pxpDebugLogScheduleWithoutFrame(packetTag, ordinal, schedule, scheduledCommandCount, scheduledPixelCount);
+          }
           schedule.senderDueMs = (schedule.senderDueMs + timeMs) & 0x7FFFFFFF;
           schedule.localDueMs += timeMs;
+          scheduledCommandCount = 0;
+          scheduledPixelCount = 0;
+          pxpDebugLogScheduleSet(packetTag, ordinal, schedule, true);
         } else {
           uint8_t latePolicy;
           if (!command.read(latePolicy) || command.remaining) {
@@ -1326,11 +1502,19 @@ bool processPacketCommands(const uint8_t* payload, uint16_t payloadLen, bool com
             error.code = PXP_ERROR_BAD_ARGUMENTS;
             return false;
           }
+          if (schedule.active && scheduledPixelCount == 0) {
+            pxpDebugLogScheduleWithoutFrame(packetTag, ordinal, schedule, scheduledCommandCount, scheduledPixelCount);
+          }
           if (!pxpTimingSynced) pxpApplyTimeSync(timeMs, receiveMs);
           schedule.active = true;
           schedule.senderDueMs = timeMs & 0x7FFFFFFF;
           schedule.localDueMs = pxpMapSenderToLocal(schedule.senderDueMs);
+          pxpRecoverStaleScheduleTimebase(schedule.senderDueMs, receiveMs, schedule.localDueMs);
+          schedule.localDueMs = pxpMapSenderToLocal(schedule.senderDueMs);
           schedule.latePolicy = latePolicy;
+          scheduledCommandCount = 0;
+          scheduledPixelCount = 0;
+          pxpDebugLogScheduleSet(packetTag, ordinal, schedule, false);
         }
         break;
       }
@@ -1376,10 +1560,18 @@ void pxpSendQueuedError(uint32_t packetTag, uint8_t commandType, uint8_t errorCo
 
 void pxpExecuteScheduledEntry(const PxpScheduledEntry& entry)
 {
-  if (entry.latePolicy == PXP_LATE_DROP && pxpIsLate(entry.dueTimeMs, millis())) return;
+  const uint32_t executeMs = millis();
+  if (entry.latePolicy == PXP_LATE_DROP && pxpIsLate(entry.dueTimeMs, executeMs)) {
+    DEBUG_PRINTF_P(PSTR("PXP scheduled drop late: tag=%lu cmd=0x%02X due=%lu now=%lu lateBy=%ld q=%u\n"),
+                   (unsigned long)entry.packetTag, entry.commandType, (unsigned long)entry.dueTimeMs,
+                   (unsigned long)executeMs, (long)(executeMs - entry.dueTimeMs), pxpScheduleCount);
+    return;
+  }
 
   const uint16_t payloadBytes = pxpArenaPayloadBytes(entry.offsetWords);
   if (!payloadBytes) {
+    DEBUG_PRINTF_P(PSTR("PXP scheduled missing payload: tag=%lu cmd=0x%02X offset=%u q=%u\n"),
+                   (unsigned long)entry.packetTag, entry.commandType, entry.offsetWords, pxpScheduleCount);
     pxpSendQueuedError(entry.packetTag, entry.commandType, PXP_ERROR_GENERIC);
     return;
   }
@@ -1387,12 +1579,16 @@ void pxpExecuteScheduledEntry(const PxpScheduledEntry& entry)
   PxpReader reader(pxpArenaPayload(entry.offsetWords), payloadBytes, false);
   uint8_t commandType;
   if (reader.read(commandType) != ReadStatus::Ok) {
+    DEBUG_PRINTF_P(PSTR("PXP scheduled read cmd failed: tag=%lu expected=0x%02X payload=%u offset=%u q=%u\n"),
+                   (unsigned long)entry.packetTag, entry.commandType, payloadBytes, entry.offsetWords, pxpScheduleCount);
     pxpSendQueuedError(entry.packetTag, entry.commandType, PXP_ERROR_LENGTH_MISMATCH);
     return;
   }
 
   uint32_t commandLen;
   if (!readVarUInt(reader, commandLen)) {
+    DEBUG_PRINTF_P(PSTR("PXP scheduled read len failed: tag=%lu cmd=0x%02X payload=%u offset=%u q=%u\n"),
+                   (unsigned long)entry.packetTag, commandType, payloadBytes, entry.offsetWords, pxpScheduleCount);
     pxpSendQueuedError(entry.packetTag, commandType, PXP_ERROR_LENGTH_MISMATCH);
     return;
   }
@@ -1414,17 +1610,32 @@ void pxpExecuteScheduledEntry(const PxpScheduledEntry& entry)
                               commandType == PXP_CMD_TARGET_SPARSE ? TargetMode::Sparse :
                               TargetMode::SparseSegments;
       if (!validateTargetPayload(mode, pxpVerifyScratch, commandLen, pxpScheduledTarget, targetError, pxpScheduledTargetData)) {
+        DEBUG_PRINTF_P(PSTR("PXP scheduled target failed: tag=%lu cmd=0x%02X err=%u len=%lu due=%lu now=%lu q=%u\n"),
+                       (unsigned long)entry.packetTag, commandType, targetError, (unsigned long)commandLen,
+                       (unsigned long)entry.dueTimeMs, (unsigned long)millis(), pxpScheduleCount);
         pxpSendQueuedError(entry.packetTag, commandType, targetError);
       }
       return;
     }
 
     case PXP_CMD_PIXEL_DATA:
+      if (pxpScheduledTarget.mode == TargetMode::None) {
+        DEBUG_PRINTF_P(PSTR("PXP scheduled PixelData without target: tag=%lu len=%lu due=%lu now=%lu q=%u\n"),
+                       (unsigned long)entry.packetTag, (unsigned long)commandLen,
+                       (unsigned long)entry.dueTimeMs, (unsigned long)millis(), pxpScheduleCount);
+      }
       if (pxpQueueResponseEndpointValid) realtimeIP = pxpQueueResponseIp;
       realtimeLock(realtimeTimeoutMs, REALTIME_MODE_PXP);
       if (!realtimeOverride && !handlePixelData(command, pxpScheduledTarget, pxpScheduledTargetData, error)) {
+        DEBUG_PRINTF_P(PSTR("PXP scheduled PixelData failed: tag=%lu err=%u len=%lu targetMode=%u targetCount=%lu due=%lu now=%lu override=%u\n"),
+                       (unsigned long)entry.packetTag, error.code, (unsigned long)commandLen,
+                       (unsigned)pxpScheduledTarget.mode, (unsigned long)pxpScheduledTarget.count,
+                       (unsigned long)entry.dueTimeMs, (unsigned long)millis(), realtimeOverride);
         pxpSendQueuedError(entry.packetTag, commandType, error.code);
       } else if (realtimeOverride && !command.skip()) {
+        DEBUG_PRINTF_P(PSTR("PXP scheduled PixelData skip failed: tag=%lu err=%u len=%lu due=%lu now=%lu override=%u\n"),
+                       (unsigned long)entry.packetTag, command.compressionError ? PXP_ERROR_COMPRESSION : PXP_ERROR_LENGTH_MISMATCH,
+                       (unsigned long)commandLen, (unsigned long)entry.dueTimeMs, (unsigned long)millis(), realtimeOverride);
         pxpSendQueuedError(entry.packetTag, commandType, command.compressionError ? PXP_ERROR_COMPRESSION : PXP_ERROR_LENGTH_MISMATCH);
       }
       return;
@@ -1446,6 +1657,13 @@ void pxpRunScheduledDue()
   if (!pxpArenaReady) pxpArenaInit();
   uint8_t processed = 0;
   uint32_t now = millis();
+  if (pxpScheduleCount && int32_t(now - pxpLastQueueTraceMs) > 1000) {
+    pxpLastQueueTraceMs = now;
+    DEBUG_PRINTF_P(PSTR("PXP queue pending: q=%u/%u nextDue=%lu now=%lu in=%ld firstCmd=0x%02X mode=%u\n"),
+                   pxpScheduleCount, PXP_TIMING_QUEUE_ENTRIES, (unsigned long)pxpScheduleEntries[0].dueTimeMs,
+                   (unsigned long)now, (long)(pxpScheduleEntries[0].dueTimeMs - now),
+                   pxpScheduleEntries[0].commandType, realtimeMode);
+  }
   while (pxpScheduleCount && processed < PXP_TIMING_QUEUE_ENTRIES && pxpTimeDue(pxpScheduleEntries[0].dueTimeMs, now)) {
     const PxpScheduledEntry entry = pxpScheduleEntries[0];
     pxpRemoveScheduledEntry(0);
@@ -1453,6 +1671,10 @@ void pxpRunScheduledDue()
     pxpArenaFree(entry.offsetWords);
     processed++;
     now = millis();
+  }
+  if (processed) {
+    DEBUG_PRINTF_P(PSTR("PXP queue processed: count=%u remaining=%u now=%lu newData=%u mode=%u\n"),
+                   processed, pxpScheduleCount, (unsigned long)now, pxpNewData, realtimeMode);
   }
 
   if (pxpScheduleCount && realtimeMode == REALTIME_MODE_PXP) {

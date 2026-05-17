@@ -495,6 +495,7 @@ void handleNotifications()
 
 #ifdef WLED_ENABLE_PXP
   pxpHandle();
+  pxpHandleScheduled();
 #endif
 
   //receive UDP notifications
