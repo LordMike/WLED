@@ -189,6 +189,9 @@ using PSRAMDynamicJsonDocument = BasicJsonDocument<PSRAM_Allocator>;
 
 #include "const.h"
 #include "colors.h"
+#ifdef WLED_ENABLE_PXP
+#include "pxp.h"
+#endif
 #include "fcn_declare.h"
 #ifndef WLED_DISABLE_OTA
   #include "ota_update.h"
@@ -739,6 +742,10 @@ WLED_GLOBAL bool receiveNotificationPalette    _INIT(true);       // apply palet
 WLED_GLOBAL bool receiveSegmentOptions         _INIT(false);      // apply segment options
 WLED_GLOBAL bool receiveSegmentBounds          _INIT(false);      // apply segment bounds (start, stop, offset)
 WLED_GLOBAL bool receiveDirect _INIT(true);                       // receive UDP/Hyperion realtime
+#ifdef WLED_ENABLE_PXP
+WLED_GLOBAL bool pxpEnabled _INIT(true);                          // receive PXP realtime
+WLED_GLOBAL uint16_t pxpPort _INIT(PXP_DEFAULT_PORT);
+#endif
 WLED_GLOBAL bool notifyDirect _INIT(true);                        // send notification if change via UI or HTTP API
 WLED_GLOBAL bool notifyButton _INIT(true);                        // send if updated by button or infrared remote
 WLED_GLOBAL bool notifyAlexa  _INIT(false);                       // send notification if updated via Alexa
@@ -910,6 +917,11 @@ WLED_GLOBAL AsyncWebHandler *editHandler _INIT(nullptr);
 // udp interface objects
 WLED_GLOBAL WiFiUDP notifierUdp, rgbUdp, notifier2Udp;
 WLED_GLOBAL WiFiUDP ntpUdp;
+#ifdef WLED_ENABLE_PXP
+WLED_GLOBAL WiFiUDP pxpUdp;
+WLED_GLOBAL bool pxpUdpConnected _INIT(false);
+WLED_GLOBAL bool pxpNewData _INIT(false);
+#endif
 WLED_GLOBAL ESPAsyncE131 e131 _INIT_N(((handleE131Packet)));
 WLED_GLOBAL ESPAsyncE131 ddp  _INIT_N(((handleE131Packet)));
 WLED_GLOBAL bool e131NewData _INIT(false);
