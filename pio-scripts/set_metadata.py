@@ -2,6 +2,7 @@ Import('env')
 import subprocess
 import json
 import re
+from datetime import datetime, timezone
 
 def get_github_repo():
     """Extract GitHub repository name from git remote URL.
@@ -76,6 +77,26 @@ def get_github_repo():
         # Any other unexpected error
         return None
 
+def get_git_commit_short():
+    """Return a short git commit id, including '-dirty' for local changes."""
+    try:
+        result = subprocess.run(['git', 'rev-parse', '--short=8', 'HEAD'],
+                              capture_output=True, text=True, check=True)
+        commit = result.stdout.strip()
+        dirty = subprocess.run(['git', 'diff', '--quiet', '--ignore-submodules'],
+                             capture_output=True)
+        staged_dirty = subprocess.run(['git', 'diff', '--cached', '--quiet', '--ignore-submodules'],
+                                    capture_output=True)
+        if dirty.returncode != 0 or staged_dirty.returncode != 0:
+            commit += "-dirty"
+        return commit
+    except Exception:
+        return "unknown"
+
+def get_build_date():
+    """Return compact UTC build date for human-facing build labels."""
+    return datetime.now(timezone.utc).strftime("%Y%m%d")
+
 # WLED version is managed by package.json; this is picked up in several places
 # - It's integrated in to the UI code
 # - Here, for wled_metadata.cpp
@@ -83,6 +104,8 @@ def get_github_repo():
 # We always take it from package.json to ensure consistency
 with open("package.json", "r") as package:
     WLED_VERSION = json.load(package)["version"]
+
+WLED_BUILD_LABEL = f"custom {WLED_VERSION} (build {get_build_date()} {get_git_commit_short()})"
 
 def has_def(cppdefs, name):
     """ Returns true if a given name is set in a CPPDEFINES collection """
@@ -109,6 +132,9 @@ def add_wled_metadata_flags(env, node):
         node,
         CPPDEFINES=cdefs
     )
+
+if not has_def(env.get("CPPDEFINES", []), "WLED_BUILD_LABEL"):
+    env.Append(CPPDEFINES=[("WLED_BUILD_LABEL", f"\\\"{WLED_BUILD_LABEL}\\\"")])
    
 env.AddBuildMiddleware(
     add_wled_metadata_flags,
