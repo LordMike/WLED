@@ -110,40 +110,53 @@ uint32_t pxpTimingLocalSyncMs = 0;
 IPAddress pxpQueueResponseIp;
 uint16_t pxpQueueResponsePort = 0;
 bool pxpQueueResponseEndpointValid = false;
+#ifdef WLED_DEBUG
 uint32_t pxpLastQueueTraceMs = 0;
 uint32_t pxpLastLateDropTraceMs = 0;
 uint32_t pxpLastTimingTraceMs = 0;
 uint16_t pxpTimeSyncTraceCount = 0;
 uint16_t pxpScheduleTraceCount = 0;
+#endif
 
 void pxpDebugLogBufferFull(uint8_t reason, uint32_t packetTag, uint8_t commandType, uint32_t commandLen, uint32_t frameLen, const PxpPacketSchedule& schedule)
 {
+#ifdef WLED_DEBUG
   DEBUG_PRINTF_P(PSTR("PXP buffer full: reason=%u tag=%lu cmd=0x%02X cmdLen=%lu frameLen=%lu q=%u/%u arena=%uB dueLocal=%lu now=%lu late=%u\n"),
                  reason, (unsigned long)packetTag, commandType, (unsigned long)commandLen, (unsigned long)frameLen,
                  pxpScheduleCount, PXP_TIMING_QUEUE_ENTRIES, PXP_TIMING_ARENA_SIZE,
                  (unsigned long)schedule.localDueMs, (unsigned long)millis(), schedule.latePolicy);
+#else
+  (void)reason; (void)packetTag; (void)commandType; (void)commandLen; (void)frameLen; (void)schedule;
+#endif
 }
 
 void pxpDebugLogScheduleWithoutFrame(uint32_t packetTag, uint32_t commandOrdinal, const PxpPacketSchedule& schedule, uint8_t queuedCommands, uint8_t queuedPixels)
 {
+#ifdef WLED_DEBUG
   DEBUG_PRINTF_P(PSTR("PXP schedule without frame: tag=%lu ord=%lu queued=%u pixels=%u q=%u/%u senderDue=%lu localDue=%lu now=%lu late=%u\n"),
                  (unsigned long)packetTag, (unsigned long)commandOrdinal, queuedCommands, queuedPixels,
                  pxpScheduleCount, PXP_TIMING_QUEUE_ENTRIES, (unsigned long)schedule.senderDueMs,
                  (unsigned long)schedule.localDueMs, (unsigned long)millis(), schedule.latePolicy);
+#else
+  (void)packetTag; (void)commandOrdinal; (void)schedule; (void)queuedCommands; (void)queuedPixels;
+#endif
 }
 
 bool pxpShouldTraceTiming()
 {
+#ifdef WLED_DEBUG
   const uint32_t now = millis();
   if (int32_t(now - pxpLastTimingTraceMs) > 1000) {
     pxpLastTimingTraceMs = now;
     return true;
   }
+#endif
   return false;
 }
 
 void pxpDebugLogTimeSync(uint32_t packetTag, uint32_t commandOrdinal, uint32_t senderTime, uint32_t receiveMs, bool wasSynced)
 {
+#ifdef WLED_DEBUG
   if (pxpTimeSyncTraceCount < 4 || pxpShouldTraceTiming()) {
     if (pxpTimeSyncTraceCount < UINT16_MAX) pxpTimeSyncTraceCount++;
     DEBUG_PRINTF_P(PSTR("PXP TimeSync: tag=%lu ord=%lu sender=%lu receive=%lu wasSynced=%u syncSender=%lu syncLocal=%lu q=%u/%u\n"),
@@ -151,10 +164,14 @@ void pxpDebugLogTimeSync(uint32_t packetTag, uint32_t commandOrdinal, uint32_t s
                    (unsigned long)receiveMs, wasSynced, (unsigned long)pxpTimingSenderSyncMs,
                    (unsigned long)pxpTimingLocalSyncMs, pxpScheduleCount, PXP_TIMING_QUEUE_ENTRIES);
   }
+#else
+  (void)packetTag; (void)commandOrdinal; (void)senderTime; (void)receiveMs; (void)wasSynced;
+#endif
 }
 
 void pxpDebugLogScheduleSet(uint32_t packetTag, uint32_t commandOrdinal, const PxpPacketSchedule& schedule, bool relative)
 {
+#ifdef WLED_DEBUG
   const uint32_t now = millis();
   if (pxpScheduleTraceCount < 8 || pxpShouldTraceTiming()) {
     if (pxpScheduleTraceCount < UINT16_MAX) pxpScheduleTraceCount++;
@@ -164,6 +181,9 @@ void pxpDebugLogScheduleSet(uint32_t packetTag, uint32_t commandOrdinal, const P
                    (unsigned long)now, (long)(schedule.localDueMs - now), schedule.latePolicy,
                    pxpScheduleCount, PXP_TIMING_QUEUE_ENTRIES, pxpTimingSynced);
   }
+#else
+  (void)packetTag; (void)commandOrdinal; (void)schedule; (void)relative;
+#endif
 }
 #endif
 
@@ -184,8 +204,13 @@ void pxpDebugLogScheduleSet(uint32_t packetTag, uint32_t commandOrdinal, const P
 
 uint8_t pxpPacket[PXP_MAX_PACKET_SIZE];
 uint8_t pxpTargetData[PXP_MAX_PACKET_SIZE];
-uint8_t pxpVerifyScratch[PXP_MAX_PACKET_SIZE];
 uint8_t pxpResponse[PXP_MAX_PACKET_SIZE];
+uint8_t pxpLzssRing[PXP_LZSS_WINDOW];
+WiFiUDP pxpUdp;
+bool pxpEnabled = true;
+uint16_t pxpPort = PXP_DEFAULT_PORT;
+bool pxpUdpConnected = false;
+bool pxpNewData = false;
 
 enum class ReadStatus : uint8_t {
   Ok,
@@ -210,7 +235,7 @@ public:
     _matchRemaining = 0;
     _ringWrite = 0;
     _decoded = 0;
-    memset(_ring, 0, sizeof(_ring));
+    if (_compressed) memset(pxpLzssRing, 0, PXP_LZSS_WINDOW);
   }
 
   ReadStatus read(uint8_t& out)
@@ -223,7 +248,7 @@ public:
 
     for (;;) {
       if (_matchRemaining) {
-        out = _ring[(_ringWrite + PXP_LZSS_WINDOW - _matchDistance) & (PXP_LZSS_WINDOW - 1)];
+        out = pxpLzssRing[(_ringWrite + PXP_LZSS_WINDOW - _matchDistance) & (PXP_LZSS_WINDOW - 1)];
         push(out);
         _matchRemaining--;
         return ReadStatus::Ok;
@@ -262,7 +287,7 @@ public:
 private:
   void push(uint8_t value)
   {
-    _ring[_ringWrite] = value;
+    pxpLzssRing[_ringWrite] = value;
     _ringWrite = (_ringWrite + 1) & (PXP_LZSS_WINDOW - 1);
     if (_decoded < UINT32_MAX) _decoded++;
   }
@@ -277,7 +302,6 @@ private:
   uint8_t _matchRemaining = 0;
   uint16_t _ringWrite = 0;
   uint32_t _decoded = 0;
-  uint8_t _ring[PXP_LZSS_WINDOW];
 };
 
 struct PxpError {
@@ -546,7 +570,7 @@ bool validateTargetPayload(TargetMode mode, const uint8_t* data, uint32_t len, P
       errorCode = PXP_ERROR_BAD_ARGUMENTS;
       return false;
     }
-    memcpy(targetData, data, len);
+    if (targetData != data && len) memmove(targetData, data, len);
     target.mode = TargetMode::Range;
     target.start = start;
     target.count = count;
@@ -614,7 +638,7 @@ bool validateTargetPayload(TargetMode mode, const uint8_t* data, uint32_t len, P
     errorCode = PXP_ERROR_BAD_ARGUMENTS;
     return false;
   }
-  memcpy(targetData, data, len);
+  if (targetData != data && len) memmove(targetData, data, len);
   target.mode = mode;
   target.start = 0;
   target.entries = entries;
@@ -936,7 +960,8 @@ bool handleVerifyTo(PxpCommandReader& command, uint32_t packetTag, PxpError& err
     return false;
   }
 
-  memset(pxpVerifyScratch, 0, bitmapBytes);
+  uint8_t* dirty = pxpResponse + PXP_MAX_PACKET_SIZE - bitmapBytes;
+  memset(dirty, 0, bitmapBytes);
   bool mismatch = false;
   uint32_t firstMismatchSegment = UINT32_MAX;
   uint16_t firstMismatchExpected = 0;
@@ -953,7 +978,7 @@ bool handleVerifyTo(PxpCommandReader& command, uint32_t packetTag, PxpError& err
     const uint32_t segmentCountPixels = segmentSize < remaining ? segmentSize : remaining;
     const uint16_t actual = crc16PxpSegment(segmentStart, segmentCountPixels);
     if (actual != expected) {
-      pxpVerifyScratch[segment >> 3] |= 1 << (segment & 0x07);
+      dirty[segment >> 3] |= 1 << (segment & 0x07);
       if (!mismatch) {
         firstMismatchSegment = segment;
         firstMismatchExpected = expected;
@@ -976,7 +1001,7 @@ bool handleVerifyTo(PxpCommandReader& command, uint32_t packetTag, PxpError& err
                    bitmapBytes, ip[0], ip[1], ip[2], ip[3], port);
   }
 
-  if (mismatch && !sendVerifyReportTo(packetTag, verifyTag, start, count, segmentSizeMinusOne, pxpVerifyScratch, bitmapBytes, ip, port)) {
+  if (mismatch && !sendVerifyReportTo(packetTag, verifyTag, start, count, segmentSizeMinusOne, dirty, bitmapBytes, ip, port)) {
     DEBUG_PRINTF_P(PSTR("PXP verify report failed: pkt=%lu verify=%lu start=%lu count=%lu dirtyBytes=%u peer=%u.%u.%u.%u:%u\n"),
                    (unsigned long)packetTag, (unsigned long)verifyTag, (unsigned long)start,
                    (unsigned long)count, bitmapBytes, ip[0], ip[1], ip[2], ip[3], port);
@@ -1247,6 +1272,7 @@ bool pxpQueueCommand(PxpCommandReader& command, uint8_t commandType, uint32_t co
 {
   const uint32_t now = millis();
   if (schedule.latePolicy == PXP_LATE_DROP && pxpIsLate(schedule.localDueMs, now)) {
+#ifdef WLED_DEBUG
     if (int32_t(now - pxpLastLateDropTraceMs) > 1000) {
       pxpLastLateDropTraceMs = now;
       DEBUG_PRINTF_P(PSTR("PXP late-drop at enqueue: tag=%lu cmd=0x%02X len=%lu due=%lu now=%lu lateBy=%ld q=%u/%u senderDue=%lu\n"),
@@ -1254,6 +1280,7 @@ bool pxpQueueCommand(PxpCommandReader& command, uint8_t commandType, uint32_t co
                      (unsigned long)schedule.localDueMs, (unsigned long)now, (long)(now - schedule.localDueMs),
                      pxpScheduleCount, PXP_TIMING_QUEUE_ENTRIES, (unsigned long)schedule.senderDueMs);
     }
+#endif
     if (!command.skip()) {
       error.code = command.compressionError ? PXP_ERROR_COMPRESSION : PXP_ERROR_LENGTH_MISMATCH;
       return false;
@@ -1305,6 +1332,7 @@ bool pxpQueueCommand(PxpCommandReader& command, uint8_t commandType, uint32_t co
     error.code = PXP_ERROR_BUFFER_FULL;
     return false;
   }
+#ifdef WLED_DEBUG
   if (commandType == PXP_CMD_PIXEL_DATA || int32_t(now - pxpLastQueueTraceMs) > 1000) {
     pxpLastQueueTraceMs = now;
     DEBUG_PRINTF_P(PSTR("PXP queued: tag=%lu cmd=0x%02X len=%lu due=%lu now=%lu in=%ld q=%u/%u offset=%u\n"),
@@ -1312,6 +1340,7 @@ bool pxpQueueCommand(PxpCommandReader& command, uint8_t commandType, uint32_t co
                    (unsigned long)entry.dueTimeMs, (unsigned long)now, (long)(entry.dueTimeMs - now),
                    pxpScheduleCount, PXP_TIMING_QUEUE_ENTRIES, offsetWords);
   }
+#endif
   return true;
 }
 
@@ -1330,11 +1359,13 @@ void pxpResetTiming()
   pxpTimingSynced = false;
   pxpQueueResponseEndpointValid = false;
   pxpScheduledTarget = PxpTarget();
+#ifdef WLED_DEBUG
   pxpLastQueueTraceMs = 0;
   pxpLastLateDropTraceMs = 0;
   pxpLastTimingTraceMs = 0;
   pxpTimeSyncTraceCount = 0;
   pxpScheduleTraceCount = 0;
+#endif
 }
 #endif
 
@@ -1412,7 +1443,7 @@ bool processPacketCommands(const uint8_t* payload, uint16_t payloadLen, bool com
           error.code = PXP_ERROR_BUFFER_FULL;
           return false;
         }
-        if (!copyCommandPayload(command, pxpResponse, commandLen)) {
+        if (!copyCommandPayload(command, pxpTargetData, commandLen)) {
           error.code = command.compressionError ? PXP_ERROR_COMPRESSION : PXP_ERROR_LENGTH_MISMATCH;
           return false;
         }
@@ -1420,7 +1451,7 @@ bool processPacketCommands(const uint8_t* payload, uint16_t payloadLen, bool com
         const TargetMode mode = commandType == PXP_CMD_TARGET_RANGE ? TargetMode::Range :
                                 commandType == PXP_CMD_TARGET_SPARSE ? TargetMode::Sparse :
                                 TargetMode::SparseSegments;
-        if (!validateTargetPayload(mode, pxpResponse, commandLen, target, targetError, pxpTargetData)) {
+        if (!validateTargetPayload(mode, pxpTargetData, commandLen, target, targetError, pxpTargetData)) {
           error.code = targetError;
           return false;
         }
@@ -1601,7 +1632,7 @@ void pxpExecuteScheduledEntry(const PxpScheduledEntry& entry)
     case PXP_CMD_TARGET_RANGE:
     case PXP_CMD_TARGET_SPARSE:
     case PXP_CMD_TARGET_SPARSE_SEGMENTS: {
-      if (commandLen > PXP_MAX_PACKET_SIZE || !copyCommandPayload(command, pxpVerifyScratch, commandLen)) {
+      if (commandLen > PXP_MAX_PACKET_SIZE || !copyCommandPayload(command, pxpScheduledTargetData, commandLen)) {
         pxpSendQueuedError(entry.packetTag, commandType, command.compressionError ? PXP_ERROR_COMPRESSION : PXP_ERROR_LENGTH_MISMATCH);
         return;
       }
@@ -1609,7 +1640,7 @@ void pxpExecuteScheduledEntry(const PxpScheduledEntry& entry)
       const TargetMode mode = commandType == PXP_CMD_TARGET_RANGE ? TargetMode::Range :
                               commandType == PXP_CMD_TARGET_SPARSE ? TargetMode::Sparse :
                               TargetMode::SparseSegments;
-      if (!validateTargetPayload(mode, pxpVerifyScratch, commandLen, pxpScheduledTarget, targetError, pxpScheduledTargetData)) {
+      if (!validateTargetPayload(mode, pxpScheduledTargetData, commandLen, pxpScheduledTarget, targetError, pxpScheduledTargetData)) {
         DEBUG_PRINTF_P(PSTR("PXP scheduled target failed: tag=%lu cmd=0x%02X err=%u len=%lu due=%lu now=%lu q=%u\n"),
                        (unsigned long)entry.packetTag, commandType, targetError, (unsigned long)commandLen,
                        (unsigned long)entry.dueTimeMs, (unsigned long)millis(), pxpScheduleCount);
@@ -1657,6 +1688,7 @@ void pxpRunScheduledDue()
   if (!pxpArenaReady) pxpArenaInit();
   uint8_t processed = 0;
   uint32_t now = millis();
+#ifdef WLED_DEBUG
   if (pxpScheduleCount && int32_t(now - pxpLastQueueTraceMs) > 1000) {
     pxpLastQueueTraceMs = now;
     DEBUG_PRINTF_P(PSTR("PXP queue pending: q=%u/%u nextDue=%lu now=%lu in=%ld firstCmd=0x%02X mode=%u\n"),
@@ -1664,6 +1696,7 @@ void pxpRunScheduledDue()
                    (unsigned long)now, (long)(pxpScheduleEntries[0].dueTimeMs - now),
                    pxpScheduleEntries[0].commandType, realtimeMode);
   }
+#endif
   while (pxpScheduleCount && processed < PXP_TIMING_QUEUE_ENTRIES && pxpTimeDue(pxpScheduleEntries[0].dueTimeMs, now)) {
     const PxpScheduledEntry entry = pxpScheduleEntries[0];
     pxpRemoveScheduledEntry(0);
@@ -1702,14 +1735,23 @@ void pxpBeginUdp()
   pxpUdpConnected = pxpUdp.begin(pxpPort);
 }
 
-void pxpHandleScheduled()
+static void pxpHandleScheduled()
 {
 #ifdef WLED_ENABLE_PXP_TIMING
   pxpRunScheduledDue();
 #endif
 }
 
-void pxpHandle()
+static void pxpShowIfNeeded()
+{
+  if (pxpNewData && millis() - strip.getLastShow() > 15) {
+    pxpNewData = false;
+    if (useMainSegmentOnly) strip.trigger();
+    else                    strip.show();
+  }
+}
+
+static void pxpHandle()
 {
   if (!pxpUdpConnected) return;
 
@@ -1742,6 +1784,45 @@ void pxpHandle()
   if (!processPacketCommands(pxpPacket + 8, payloadLen, compressed, packetTag, receiveMs, error, ordinal)) {
     sendError(packetTag, ordinal, error.command, error.code);
   }
+}
+
+void pxpHandleNotifications()
+{
+  pxpHandleScheduled();
+  pxpShowIfNeeded();
+  pxpHandle();
+  pxpHandleScheduled();
+  pxpShowIfNeeded();
+}
+
+void pxpReadConfig(JsonObject ifLive)
+{
+  JsonObject ifLivePxp = ifLive["pxp"];
+  pxpEnabled = ifLivePxp["en"] | pxpEnabled;
+  pxpPort = ifLivePxp["port"] | pxpPort;
+  if (!pxpPort) pxpPort = PXP_DEFAULT_PORT;
+}
+
+void pxpWriteConfig(JsonObject ifLive)
+{
+  JsonObject ifLivePxp = ifLive.createNestedObject("pxp");
+  ifLivePxp["en"] = pxpEnabled;
+  ifLivePxp["port"] = pxpPort;
+}
+
+void pxpReadSettings(AsyncWebServerRequest* request)
+{
+  if (!request) return;
+  pxpEnabled = request->hasArg(F("PXPEN"));
+  const int port = request->arg(F("PXPPORT")).toInt();
+  if (port > 0 && port <= 65535) pxpPort = port;
+}
+
+void pxpAppendSettingsJS(Print& settingsScript)
+{
+  settingsScript.print(F("if(!d.Sf.PXPEN)d.Sf.RLM.insertAdjacentHTML('afterend','<br><span id=\"PXP\">Receive PXP realtime: <input type=\"checkbox\" name=\"PXPEN\"><br>PXP port: <input name=\"PXPPORT\" type=\"number\" min=\"1\" max=\"65535\" value=\"47987\" class=\"d5\" required><br><i>Reboot required.</i><br><br></span>');"));
+  printSetFormCheckbox(settingsScript, PSTR("PXPEN"), pxpEnabled);
+  printSetFormValue(settingsScript, PSTR("PXPPORT"), pxpPort);
 }
 
 #endif
