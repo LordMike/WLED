@@ -594,12 +594,7 @@ bool deserializeConfig(JsonObject doc, bool fromFS) {
   CJSON(e131Port, if_live["port"]); // 5568
   if (e131Port == DDP_DEFAULT_PORT) e131Port = E131_DEFAULT_PORT; // prevent double DDP port allocation
   CJSON(e131Multicast, if_live[F("mc")]);
-#ifdef WLED_ENABLE_PXP
-  JsonObject if_live_pxp = if_live["pxp"];
-  CJSON(pxpEnabled, if_live_pxp["en"]);
-  CJSON(pxpPort, if_live_pxp["port"]);
-  if (!pxpPort) pxpPort = PXP_DEFAULT_PORT;
-#endif
+  pxpReadConfig(if_live);
 
   JsonObject if_live_dmx = if_live["dmx"];
   CJSON(e131Universe, if_live_dmx[F("uni")]);
@@ -1134,11 +1129,7 @@ void serializeConfig(JsonObject root) {
   if_live[F("rlm")] = realtimeRespectLedMaps;
   if_live["port"] = e131Port;
   if_live[F("mc")] = e131Multicast;
-#ifdef WLED_ENABLE_PXP
-  JsonObject if_live_pxp = if_live.createNestedObject("pxp");
-  if_live_pxp["en"] = pxpEnabled;
-  if_live_pxp["port"] = pxpPort;
-#endif
+  pxpWriteConfig(if_live);
 
   JsonObject if_live_dmx = if_live.createNestedObject("dmx");
   if_live_dmx[F("uni")] = e131Universe;

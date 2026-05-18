@@ -457,11 +457,7 @@ void handleSettingsSet(AsyncWebServerRequest *request, byte subPage)
     e131Multicast = request->hasArg(F("EM"));
     t = request->arg(F("EP")).toInt();
     if (t > 0) e131Port = t;
-#ifdef WLED_ENABLE_PXP
-    pxpEnabled = request->hasArg(F("PXPEN"));
-    t = request->arg(F("PXPPORT")).toInt();
-    if (t > 0 && t <= 65535) pxpPort = t;
-#endif
+    pxpReadSettings(request);
     t = request->arg(F("EU")).toInt();
     if (t >= 0  && t <= 63999) e131Universe = t;
     t = request->arg(F("DA")).toInt();

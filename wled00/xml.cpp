@@ -513,11 +513,7 @@ void getSettingsJS(byte subPage, Print& settingsScript)
     printSetFormCheckbox(settingsScript,PSTR("MO"),useMainSegmentOnly);
     printSetFormCheckbox(settingsScript,PSTR("RLM"),realtimeRespectLedMaps);
     printSetFormValue(settingsScript,PSTR("EP"),e131Port);
-#ifdef WLED_ENABLE_PXP
-    settingsScript.print(F("gId('PXP').innerHTML='Receive PXP realtime: <input type=\"checkbox\" name=\"PXPEN\"><br>PXP port: <input name=\"PXPPORT\" type=\"number\" min=\"1\" max=\"65535\" value=\"47987\" class=\"d5\" required><br><i>Reboot required.</i><br><br>';"));
-    printSetFormCheckbox(settingsScript,PSTR("PXPEN"),pxpEnabled);
-    printSetFormValue(settingsScript,PSTR("PXPPORT"),pxpPort);
-#endif
+    pxpAppendSettingsJS(settingsScript);
     printSetFormCheckbox(settingsScript,PSTR("ES"),e131SkipOutOfSequence);
     printSetFormCheckbox(settingsScript,PSTR("EM"),e131Multicast);
     printSetFormValue(settingsScript,PSTR("EU"),e131Universe);

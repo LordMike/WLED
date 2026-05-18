@@ -480,23 +480,10 @@ void handleNotifications()
     if (useMainSegmentOnly) strip.trigger();
     else                    strip.show();
   }
-#ifdef WLED_ENABLE_PXP
-  pxpHandleScheduled();
-  if (pxpNewData && millis() - strip.getLastShow() > 15)
-  {
-    pxpNewData = false;
-    if (useMainSegmentOnly) strip.trigger();
-    else                    strip.show();
-  }
-#endif
+  pxpHandleNotifications();
 
   //unlock strip when realtime UDP times out
   if (realtimeMode && millis() > realtimeTimeout) exitRealtime();
-
-#ifdef WLED_ENABLE_PXP
-  pxpHandle();
-  pxpHandleScheduled();
-#endif
 
   //receive UDP notifications
   if (!udpConnected) return;
