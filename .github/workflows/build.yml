@@ -23,6 +23,19 @@ jobs:
     runs-on: ubuntu-latest
     steps:
     - uses: actions/checkout@v4
+    - name: Apply tag version
+      if: github.ref_type == 'tag'
+      run: |
+        python3 - <<'PY'
+        import json
+        import os
+        from pathlib import Path
+
+        path = Path("package.json")
+        data = json.loads(path.read_text())
+        data["version"] = os.environ["GITHUB_REF_NAME"].lstrip("vV")
+        path.write_text(json.dumps(data, indent=2) + "\n")
+        PY
     - name: Apply release config
       if: inputs.release
       run: cp "${{ inputs.release_config }}" platformio_release.ini
@@ -50,6 +63,19 @@ jobs:
         environment: ${{ fromJSON(needs.get_default_envs.outputs.environments) }}
     steps:
     - uses: actions/checkout@v4
+    - name: Apply tag version
+      if: github.ref_type == 'tag'
+      run: |
+        python3 - <<'PY'
+        import json
+        import os
+        from pathlib import Path
+
+        path = Path("package.json")
+        data = json.loads(path.read_text())
+        data["version"] = os.environ["GITHUB_REF_NAME"].lstrip("vV")
+        path.write_text(json.dumps(data, indent=2) + "\n")
+        PY
     - name: Apply release config
       if: inputs.release
       run: cp "${{ inputs.release_config }}" platformio_release.ini
