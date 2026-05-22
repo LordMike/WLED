@@ -16,6 +16,7 @@ A fast and feature-rich firmware for ESP32 microcontrollers to control addressab
 Originally created by [Aircoookie](https://github.com/Aircoookie), now maintained by a community of contributors.
 
 ## ⚙️ Features
+- **This repo unique:** [PXP protocol support](https://github.com/LordMike/MBW.LedCompositor/blob/master/docs/protocols/Pxp.md)
 
 ### Effects & Visuals
 - [**200+ built-in effects**](https://kno.wled.ge/features/effects/) including classic animations, audio-reactive, and 2D/matrix effects

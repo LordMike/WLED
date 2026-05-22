@@ -1,6 +1,7 @@
 name: LordMike custom builds
 
-on: [push]
+on:
+  workflow_dispatch:
 
 jobs:
 

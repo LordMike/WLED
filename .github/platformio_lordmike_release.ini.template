@@ -1,0 +1,6 @@
+; Fork release matrix for LordMike/WLED.
+; Copied to platformio_release.ini by .github/workflows/lordmike-release.yml.
+
+[platformio]
+default_envs = pxp
+               pxp_aht10_ina226
