@@ -11,7 +11,7 @@ def _get_cpp_define_value(env, define):
     define_list = [item[-1] for item in env["CPPDEFINES"] if item[0] == define]
 
     if define_list:
-        return define_list[0]
+        return define_list[-1]
 
     return None
 
