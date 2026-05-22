@@ -17,6 +17,7 @@ A fast and feature-rich implementation of an ESP32 and ESP8266 webserver to cont
 Originally created by [Aircoookie](https://github.com/Aircoookie)
 
 ## ⚙️ Features
+- **This repo unique:** [PXP protocol support](https://github.com/LordMike/MBW.LedCompositor/blob/master/docs/protocols/Pxp.md)
 - WS2812FX library with more than 100 special effects  
 - FastLED noise effects and 50 palettes  
 - Modern UI with color, effect and segment controls  
@@ -84,4 +85,3 @@ If you are prone to photosensitive epilepsy, we recommended you do **not** use t
 If you still want to try, don't use strobe, lighting or noise modes or high effect speed settings.
 
 As per the EUPL license, I assume no liability for any damage to you or any other person or equipment.  
-
