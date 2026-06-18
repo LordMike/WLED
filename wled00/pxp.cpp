@@ -86,11 +86,13 @@ struct PxpArenaHeader {
 struct PxpScheduledEntry {
   uint32_t dueTimeMs;
   uint32_t packetTag;
+  uint16_t commandOrdinal;
   uint16_t sequence;
   uint16_t offsetWords;
   uint8_t latePolicy;
   uint8_t commandType;
 };
+static_assert(sizeof(PxpScheduledEntry) == 16, "PXP scheduled entry size changed");
 
 struct PxpPacketSchedule {
   bool active = false;
@@ -843,6 +845,24 @@ bool sendResponse(uint32_t packetTag, uint16_t payloadLen)
   return sendResponseTo(packetTag, payloadLen, pxpUdp.remoteIP(), pxpUdp.remotePort());
 }
 
+uint8_t pxpVarUIntLen(uint32_t value);
+void pxpWriteVarUIntRaw(uint8_t*& out, uint32_t value);
+
+bool finishResponseCommand(uint8_t commandType, uint16_t payloadLen, uint16_t& commandStreamLen)
+{
+  const uint16_t headerLen = 1 + pxpVarUIntLen(payloadLen);
+  commandStreamLen = headerLen + payloadLen;
+  if (commandStreamLen > PXP_MAX_PACKET_SIZE - 8) return false;
+
+  if (headerLen != 2 && payloadLen) {
+    memmove(pxpResponse + headerLen, pxpResponse + 2, payloadLen);
+  }
+  pxpResponse[0] = commandType;
+  uint8_t* len = pxpResponse + 1;
+  pxpWriteVarUIntRaw(len, payloadLen);
+  return true;
+}
+
 bool sendErrorTo(uint32_t packetTag, uint32_t commandOrdinal, uint8_t commandType, uint8_t errorCode, const IPAddress& ip, uint16_t port)
 {
   DEBUG_PRINTF_P(PSTR("PXP error: tag=%lu ord=%lu cmd=0x%02X err=%u peer=%u.%u.%u.%u:%u q=%u\n"),
@@ -855,17 +875,15 @@ bool sendErrorTo(uint32_t packetTag, uint32_t commandOrdinal, uint8_t commandTyp
 #endif
   );
 
-  PxpWriteBuffer out{pxpResponse, PXP_MAX_PACKET_SIZE - 8};
-  out.write(PXP_CMD_ERROR);
-
   PxpWriteBuffer payload{pxpResponse + 2, PXP_MAX_PACKET_SIZE - 10};
   payload.writeLe32(packetTag);
   payload.writeVarUInt(commandOrdinal);
   payload.write(commandType);
   payload.write(errorCode);
 
-  pxpResponse[1] = payload.pos;
-  return sendResponseTo(packetTag, payload.pos + 2, ip, port);
+  uint16_t commandStreamLen;
+  if (!finishResponseCommand(PXP_CMD_ERROR, payload.pos, commandStreamLen)) return false;
+  return sendResponseTo(packetTag, commandStreamLen, ip, port);
 }
 
 void sendError(uint32_t packetTag, uint32_t commandOrdinal, uint8_t commandType, uint8_t errorCode)
@@ -885,9 +903,6 @@ void fillDeviceId(uint8_t* out)
 
 void sendDiscoverReply(uint32_t packetTag)
 {
-  PxpWriteBuffer out{pxpResponse, PXP_MAX_PACKET_SIZE - 8};
-  out.write(PXP_CMD_DISCOVER_REPLY);
-
   PxpWriteBuffer payload{pxpResponse + 2, PXP_MAX_PACKET_SIZE - 10};
   fillDeviceId(payload.data);
   payload.pos = 20;
@@ -905,15 +920,14 @@ void sendDiscoverReply(uint32_t packetTag)
   payload.writeLe16(featureFlags);
   payload.write(9);          // 512-byte LZSS window
 
-  pxpResponse[1] = payload.pos;
-  sendResponse(packetTag, payload.pos + 2);
+  uint16_t commandStreamLen;
+  if (finishResponseCommand(PXP_CMD_DISCOVER_REPLY, payload.pos, commandStreamLen)) {
+    sendResponse(packetTag, commandStreamLen);
+  }
 }
 
 bool sendVerifyReportTo(uint32_t packetTag, uint32_t verifyTag, uint32_t start, uint32_t count, uint8_t segmentSizeMinusOne, const uint8_t* dirty, uint16_t dirtyLen, const IPAddress& ip, uint16_t port)
 {
-  PxpWriteBuffer out{pxpResponse, PXP_MAX_PACKET_SIZE - 8};
-  out.write(PXP_CMD_VERIFY_REPORT);
-
   PxpWriteBuffer payload{pxpResponse + 2, PXP_MAX_PACKET_SIZE - 10};
   payload.writeLe32(verifyTag);
   payload.writeVarUInt(start);
@@ -923,9 +937,9 @@ bool sendVerifyReportTo(uint32_t packetTag, uint32_t verifyTag, uint32_t start, 
     if (!payload.write(dirty[i])) return false;
   }
 
-  if (payload.pos > 127) return false;
-  pxpResponse[1] = payload.pos;
-  return sendResponseTo(packetTag, payload.pos + 2, ip, port);
+  uint16_t commandStreamLen;
+  if (!finishResponseCommand(PXP_CMD_VERIFY_REPORT, payload.pos, commandStreamLen)) return false;
+  return sendResponseTo(packetTag, commandStreamLen, ip, port);
 }
 
 bool sendVerifyReport(uint32_t packetTag, uint32_t verifyTag, uint32_t start, uint32_t count, uint8_t segmentSizeMinusOne, const uint8_t* dirty, uint16_t dirtyLen)
@@ -1268,7 +1282,7 @@ void pxpRemoveScheduledEntry(uint8_t pos)
   if (pxpScheduleCount) pxpScheduleCount--;
 }
 
-bool pxpQueueCommand(PxpCommandReader& command, uint8_t commandType, uint32_t commandLen, const PxpPacketSchedule& schedule, uint32_t packetTag, PxpError& error)
+bool pxpQueueCommand(PxpCommandReader& command, uint8_t commandType, uint32_t commandLen, const PxpPacketSchedule& schedule, uint32_t packetTag, uint16_t commandOrdinal, PxpError& error)
 {
   const uint32_t now = millis();
   if (schedule.latePolicy == PXP_LATE_DROP && pxpIsLate(schedule.localDueMs, now)) {
@@ -1322,6 +1336,7 @@ bool pxpQueueCommand(PxpCommandReader& command, uint8_t commandType, uint32_t co
   PxpScheduledEntry entry;
   entry.dueTimeMs = schedule.localDueMs;
   entry.packetTag = packetTag;
+  entry.commandOrdinal = commandOrdinal;
   entry.sequence = pxpScheduleSequence++;
   entry.offsetWords = offsetWords;
   entry.latePolicy = schedule.latePolicy;
@@ -1415,7 +1430,7 @@ bool processPacketCommands(const uint8_t* payload, uint16_t payloadLen, bool com
 
 #ifdef WLED_ENABLE_PXP_TIMING
     if (schedule.active && pxpIsSchedulableCommand(commandType)) {
-      if (!pxpQueueCommand(command, commandType, commandLen, schedule, packetTag, error)) return false;
+      if (!pxpQueueCommand(command, commandType, commandLen, schedule, packetTag, ordinal, error)) return false;
       if (scheduledCommandCount < UINT8_MAX) scheduledCommandCount++;
       if (commandType == PXP_CMD_PIXEL_DATA && scheduledPixelCount < UINT8_MAX) scheduledPixelCount++;
       ordinal++;
@@ -1582,10 +1597,10 @@ bool processPacketCommands(const uint8_t* payload, uint16_t payloadLen, bool com
 }
 
 #ifdef WLED_ENABLE_PXP_TIMING
-void pxpSendQueuedError(uint32_t packetTag, uint8_t commandType, uint8_t errorCode)
+void pxpSendQueuedError(uint32_t packetTag, uint32_t commandOrdinal, uint8_t commandType, uint8_t errorCode)
 {
   if (pxpQueueResponseEndpointValid) {
-    sendErrorTo(packetTag, 0, commandType, errorCode, pxpQueueResponseIp, pxpQueueResponsePort);
+    sendErrorTo(packetTag, commandOrdinal, commandType, errorCode, pxpQueueResponseIp, pxpQueueResponsePort);
   }
 }
 
@@ -1603,7 +1618,7 @@ void pxpExecuteScheduledEntry(const PxpScheduledEntry& entry)
   if (!payloadBytes) {
     DEBUG_PRINTF_P(PSTR("PXP scheduled missing payload: tag=%lu cmd=0x%02X offset=%u q=%u\n"),
                    (unsigned long)entry.packetTag, entry.commandType, entry.offsetWords, pxpScheduleCount);
-    pxpSendQueuedError(entry.packetTag, entry.commandType, PXP_ERROR_GENERIC);
+    pxpSendQueuedError(entry.packetTag, entry.commandOrdinal, entry.commandType, PXP_ERROR_GENERIC);
     return;
   }
 
@@ -1612,7 +1627,7 @@ void pxpExecuteScheduledEntry(const PxpScheduledEntry& entry)
   if (reader.read(commandType) != ReadStatus::Ok) {
     DEBUG_PRINTF_P(PSTR("PXP scheduled read cmd failed: tag=%lu expected=0x%02X payload=%u offset=%u q=%u\n"),
                    (unsigned long)entry.packetTag, entry.commandType, payloadBytes, entry.offsetWords, pxpScheduleCount);
-    pxpSendQueuedError(entry.packetTag, entry.commandType, PXP_ERROR_LENGTH_MISMATCH);
+    pxpSendQueuedError(entry.packetTag, entry.commandOrdinal, entry.commandType, PXP_ERROR_LENGTH_MISMATCH);
     return;
   }
 
@@ -1620,7 +1635,7 @@ void pxpExecuteScheduledEntry(const PxpScheduledEntry& entry)
   if (!readVarUInt(reader, commandLen)) {
     DEBUG_PRINTF_P(PSTR("PXP scheduled read len failed: tag=%lu cmd=0x%02X payload=%u offset=%u q=%u\n"),
                    (unsigned long)entry.packetTag, commandType, payloadBytes, entry.offsetWords, pxpScheduleCount);
-    pxpSendQueuedError(entry.packetTag, commandType, PXP_ERROR_LENGTH_MISMATCH);
+    pxpSendQueuedError(entry.packetTag, entry.commandOrdinal, commandType, PXP_ERROR_LENGTH_MISMATCH);
     return;
   }
 
@@ -1633,7 +1648,7 @@ void pxpExecuteScheduledEntry(const PxpScheduledEntry& entry)
     case PXP_CMD_TARGET_SPARSE:
     case PXP_CMD_TARGET_SPARSE_SEGMENTS: {
       if (commandLen > PXP_MAX_PACKET_SIZE || !copyCommandPayload(command, pxpScheduledTargetData, commandLen)) {
-        pxpSendQueuedError(entry.packetTag, commandType, command.compressionError ? PXP_ERROR_COMPRESSION : PXP_ERROR_LENGTH_MISMATCH);
+        pxpSendQueuedError(entry.packetTag, entry.commandOrdinal, commandType, command.compressionError ? PXP_ERROR_COMPRESSION : PXP_ERROR_LENGTH_MISMATCH);
         return;
       }
       uint8_t targetError = PXP_ERROR_BAD_ARGUMENTS;
@@ -1644,7 +1659,7 @@ void pxpExecuteScheduledEntry(const PxpScheduledEntry& entry)
         DEBUG_PRINTF_P(PSTR("PXP scheduled target failed: tag=%lu cmd=0x%02X err=%u len=%lu due=%lu now=%lu q=%u\n"),
                        (unsigned long)entry.packetTag, commandType, targetError, (unsigned long)commandLen,
                        (unsigned long)entry.dueTimeMs, (unsigned long)millis(), pxpScheduleCount);
-        pxpSendQueuedError(entry.packetTag, commandType, targetError);
+        pxpSendQueuedError(entry.packetTag, entry.commandOrdinal, commandType, targetError);
       }
       return;
     }
@@ -1662,23 +1677,23 @@ void pxpExecuteScheduledEntry(const PxpScheduledEntry& entry)
                        (unsigned long)entry.packetTag, error.code, (unsigned long)commandLen,
                        (unsigned)pxpScheduledTarget.mode, (unsigned long)pxpScheduledTarget.count,
                        (unsigned long)entry.dueTimeMs, (unsigned long)millis(), realtimeOverride);
-        pxpSendQueuedError(entry.packetTag, commandType, error.code);
+        pxpSendQueuedError(entry.packetTag, entry.commandOrdinal, commandType, error.code);
       } else if (realtimeOverride && !command.skip()) {
         DEBUG_PRINTF_P(PSTR("PXP scheduled PixelData skip failed: tag=%lu err=%u len=%lu due=%lu now=%lu override=%u\n"),
                        (unsigned long)entry.packetTag, command.compressionError ? PXP_ERROR_COMPRESSION : PXP_ERROR_LENGTH_MISMATCH,
                        (unsigned long)commandLen, (unsigned long)entry.dueTimeMs, (unsigned long)millis(), realtimeOverride);
-        pxpSendQueuedError(entry.packetTag, commandType, command.compressionError ? PXP_ERROR_COMPRESSION : PXP_ERROR_LENGTH_MISMATCH);
+        pxpSendQueuedError(entry.packetTag, entry.commandOrdinal, commandType, command.compressionError ? PXP_ERROR_COMPRESSION : PXP_ERROR_LENGTH_MISMATCH);
       }
       return;
 
     case PXP_CMD_VERIFY:
       if (pxpQueueResponseEndpointValid && !handleVerifyTo(command, entry.packetTag, error, pxpQueueResponseIp, pxpQueueResponsePort)) {
-        pxpSendQueuedError(entry.packetTag, commandType, error.code);
+        pxpSendQueuedError(entry.packetTag, entry.commandOrdinal, commandType, error.code);
       }
       return;
 
     default:
-      pxpSendQueuedError(entry.packetTag, commandType, PXP_ERROR_UNSUPPORTED);
+      pxpSendQueuedError(entry.packetTag, entry.commandOrdinal, commandType, PXP_ERROR_UNSUPPORTED);
       return;
   }
 }
