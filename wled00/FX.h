@@ -42,7 +42,7 @@
 #define DEFAULT_MODE       (uint8_t)0
 #define DEFAULT_SPEED      (uint8_t)128
 #define DEFAULT_INTENSITY  (uint8_t)128
-#define DEFAULT_COLOR      (uint32_t)0xFFAA00
+#define DEFAULT_COLOR      (uint32_t)0xFFA000
 #define DEFAULT_C1         (uint8_t)128
 #define DEFAULT_C2         (uint8_t)128
 #define DEFAULT_C3         (uint8_t)16
@@ -372,7 +372,9 @@ extern byte realtimeMode;           // used in getMappedPixelIndex()
 #define FX_MODE_PARTICLEGALAXY         217
 #define FX_MODE_COLORCLOUDS            218
 #define FX_MODE_SLOW_TRANSITION        219
-#define MODE_COUNT                     220
+#define FX_MODE_2DANALOGCLOCK          220  // new in 16.1
+
+#define MODE_COUNT                     221
 
 
 #define TRANSITION_FADE            0x00  // universal
@@ -562,7 +564,7 @@ class Segment {
   public:
 
     Segment(uint16_t sStart=0, uint16_t sStop=30, uint16_t sStartY = 0, uint16_t sStopY = 1)
-    : colors{DEFAULT_COLOR,BLACK,BLACK}
+    : colors{BLACK,BLACK,BLACK} // set colors to black, will be updated to orange if segment is created as "auto segment" or from UI
     , start(sStart)
     , stop(sStop > sStart ? sStop : sStart+1) // minimum length is 1
     , startY(sStartY)
@@ -618,6 +620,7 @@ class Segment {
       DEBUGFX_PRINTLN();
       #endif
       clearName();
+      stopTransition();   // deallocate "_t" (transition) and with it "_segOld" note: _segOld has _t=null, see copy constructor
       #ifdef WLED_ENABLE_GIF
       endImagePlayback(this);
       #endif
@@ -930,7 +933,7 @@ class WS2812FX {
     uint8_t getFirstSelectedSegId() const;
     uint8_t getLastActiveSegmentId() const;
     uint8_t getActiveSegsLightCapabilities(bool selectedOnly = false) const;
-    uint8_t addEffect(uint8_t id, mode_ptr mode_fn, const char *mode_name);         // add effect to the list; defined in FX.cpp;
+    uint8_t addEffect(uint8_t id, mode_ptr mode_fn, const char *mode_name);         // add effect to the list - mode_name must point to PROGMEM; defined in FX.cpp;
 
     inline uint8_t getBrightness() const    { return _brightness; }       // returns current strip brightness
     inline static constexpr unsigned getMaxSegments() { return MAX_NUM_SEGMENTS; }  // returns maximum number of supported segments (fixed value)
