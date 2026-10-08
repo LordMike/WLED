@@ -1103,6 +1103,8 @@ uint32_t pxpMapSenderToLocal(uint32_t senderMs)
   return pxpTimingLocalSyncMs + pxpSenderTimeDiff(senderMs & 0x7FFFFFFF, pxpTimingSenderSyncMs);
 }
 
+void pxpArenaInit();
+
 void pxpApplyTimeSync(uint32_t senderMs, uint32_t receiveMs, bool trackSenderTime = true)
 {
   senderMs &= 0x7FFFFFFF;
