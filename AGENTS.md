@@ -7,6 +7,8 @@ See also: `.github/copilot-instructions.md`, `.github/agent-build.instructions.m
 `docs/cpp.instructions.md`, `docs/web.instructions.md`, `docs/cicd.instructions.md`,
 `docs/hardening.instructions.md`, `docs/securecode.instructions.md`.
 
+Before preparing or publishing a LordMike/WLED release, read [docs/releasing-lordmike.md](docs/releasing-lordmike.md).
+
 Always reference these instructions - including coding guidelines in `docs/` - first and fallback to search or bash commands only when you encounter unexpected information that does not match the info here.
 
 ## Required User Agreement
