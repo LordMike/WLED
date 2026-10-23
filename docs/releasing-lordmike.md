@@ -30,7 +30,7 @@ Push a version tag to build firmware and create a draft GitHub release. Update i
 
    Require the complete workflow to succeed. Confirm the draft contains `WLED_<version>_PXP.bin` and `WLED_<version>_PXP_AHT10_INA226.bin`.
 
-4. **Update the GitHub draft.** Replace placeholder notes with changes since the previous published fork release: upstream and PXP improvements, compatibility changes, verified tests, and known limitations. Cite relevant commits or comparisons; distinguish CI results from hardware testing. Preserve useful existing notes and assets.
+4. **Update the GitHub draft.** Release CI fills the draft with [generated notes](../.github/scripts/lordmike-release-notes.sh): fork commits and upstream WLED commits since the previous fork tag. Add a summary above them covering changes since the previous published fork release: upstream and PXP improvements, compatibility changes, verified tests, and known limitations. Cite relevant commits or comparisons; distinguish CI results from hardware testing. Preserve useful existing notes and assets.
 
    Write notes to a temporary Markdown file, set `$releaseNotesPath` to its path, and update GitHub while retaining draft status:
 
